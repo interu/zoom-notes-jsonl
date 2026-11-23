@@ -26,6 +26,24 @@ ZOOM_NOTES_OUTPUT_DIR=~/zoom-transcripts .build/release/zoom-notes-jsonl
 .build/release/zoom-notes-jsonl --out ~/zoom-transcripts
 ```
 
+## 常駐させる（ログイン時に自動起動）
+
+launchd の LaunchAgent として登録すると、ログイン時に自動起動し、異常終了しても再起動します。起動しておけば、Zoom の起動や会議参加を待って、自分用メモパネルを開くたびに新しいファイルを作ります。
+
+```sh
+scripts/launch-agent.sh install ~/zoom-transcripts   # ビルドして登録（出力先を変えるときも再実行）
+scripts/launch-agent.sh status                       # 稼働状態と直近ログ
+scripts/launch-agent.sh uninstall                    # 登録解除
+```
+
+- パネル待機中は負荷を抑えるため2秒間隔で確認します（パネル表示中は0.3秒間隔）。そのためファイルの作成は最大2秒遅れますが、その間に表示された行も取りこぼしません。
+- 出力先は引数か環境変数 `ZOOM_NOTES_OUTPUT_DIR` で指定します（必須）。plist の `EnvironmentVariables` に書き込まれます。
+- 確定待ち秒数を変えたい場合は `ZOOM_NOTES_TAIL_DEBOUNCE_SECONDS=2 scripts/launch-agent.sh install ~/zoom-transcripts` のように指定します。指定せずに `install` し直すと既定値（1.5秒）に戻ります。
+- バイナリは `~/Library/Application Support/zoom-notes-jsonl/` にコピーされ、ログは `~/Library/Logs/zoom-notes-jsonl/zoom-notes-jsonl.log` に出ます。ログには発話テキストも含まれます。
+- **アクセシビリティ権限はコピーしたバイナリに対して付与してください**（ターミナルへの許可は引き継がれません）。未許可の間は30秒ごとに再起動して許可を求め、許可されれば自動で動き始めます。
+- `install` はキーチェーンにあるコード署名用の証明書（Apple Development など）でバイナリに署名します。これによりアクセシビリティの許可が証明書に紐づき、再ビルドして `install` し直しても許可が外れません。証明書は `ZOOM_NOTES_SIGNING_IDENTITY`（証明書名か SHA-1）で指定でき、見つからない場合は ad-hoc 署名になります（その場合は再インストールのたびに許可の付け直しが必要です）。
+- 許可したのにダイアログが出続ける場合は、アクセシビリティの一覧に古い `zoom-notes-jsonl` が残っています。「−」で削除してから許可し直してください。
+
 ## 出力
 
 会議セッション（自分用メモパネルの検出〜クローズ）ごとに、セッション開始時刻を元にしたファイル名で JSON Lines ファイルが作成されます。
@@ -59,3 +77,23 @@ swift run ax-dump --text-only   # テキスト要素のみ列挙
 swift run ax-dump --find-notes  # 「自分用メモ」ウィンドウを全プロセス横断で探索
 swift run ax-dump --dump-notes  # 「自分用メモ」ウィンドウの構造をダンプ
 ```
+
+## 再生スクリプト
+
+`scripts/replay.py` は過去の出力 JSONL をリアルタイム追記のように `./replay/live.jsonl` へ再生します。出力を tail して処理するツールの開発・テスト用です（Python 3、標準ライブラリのみ）。
+
+```sh
+scripts/replay.py ~/zoom-transcripts/xxx-transcript.jsonl                 # 等倍で再生
+scripts/replay.py xxx-transcript.jsonl --speed 10 --start 12:30           # 10倍速、12分30秒地点から
+scripts/replay.py xxx-transcript.jsonl --dedupe --partial-prob 0.3        # 重複除去＋途中書きを混ぜる
+```
+
+| オプション | 説明 |
+|---|---|
+| `--out PATH` | 出力先（既定 `./replay/live.jsonl`、開始時に truncate） |
+| `--speed N` | 再生速度の倍率（既定 1.0） |
+| `--start POS` | 開始位置。分（`10`、`2.5`）または `mm:ss`。それより前の行は起動時に一括書き出し |
+| `--partial-prob P` | 1行を2回の write に分割する確率（既定 0） |
+| `--partial-delay SEC` | 分割 write の間の待ち秒（既定 0.05、speed 非適用） |
+| `--seed N` | 乱数シード（再現用） |
+| `--dedupe` | `revision==1` で出力済みの (speaker, text) の行をスキップ |
